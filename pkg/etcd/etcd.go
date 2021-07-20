@@ -41,7 +41,6 @@ import (
 )
 
 const (
-	snapshotPrefix      = "etcd-snapshot-"
 	endpoint            = "https://127.0.0.1:2379"
 	testTimeout         = time.Second * 10
 	manageTickerTime    = time.Second * 15
@@ -71,7 +70,7 @@ type ETCD struct {
 	runtime *config.ControlRuntime
 	address string
 	cron    *cron.Cron
-	s3      *s3
+	s3      *S3
 }
 
 type learnerProgress struct {
@@ -210,7 +209,7 @@ func (e *ETCD) Reset(ctx context.Context, rebootstrap func() error) error {
 				return err
 			}
 			logrus.Infof("Retrieving etcd snapshot %s from S3", e.config.ClusterResetRestorePath)
-			if err := e.s3.download(ctx); err != nil {
+			if err := e.s3.Download(ctx); err != nil {
 				return err
 			}
 			logrus.Infof("S3 download complete for %s", e.config.ClusterResetRestorePath)
@@ -854,7 +853,7 @@ func (e *ETCD) Snapshot(ctx context.Context, config *config.Control) error {
 
 	// check if we need to perform a retention check
 	if e.config.EtcdSnapshotRetention >= 1 {
-		if err := snapshotRetention(e.config.EtcdSnapshotRetention, snapshotDir); err != nil {
+		if err := snapshotRetention(e.config.EtcdSnapshotRetention, e.config.EtcdSnapshotName, snapshotDir); err != nil {
 			return errors.Wrap(err, "failed to apply snapshot retention")
 		}
 	}
@@ -960,7 +959,7 @@ func (e *ETCD) listSnapshots(ctx context.Context, snapshotDir string) ([]Snapsho
 // if it hasn't yet been initialized.
 func (e *ETCD) initS3IfNil(ctx context.Context) error {
 	if e.s3 == nil {
-		s3, err := newS3(ctx, e.config)
+		s3, err := NewS3(ctx, e.config)
 		if err != nil {
 			return err
 		}
@@ -978,7 +977,15 @@ func (e *ETCD) PruneSnapshots(ctx context.Context) error {
 		return errors.Wrap(err, "failed to get the snapshot dir")
 	}
 
-	return snapshotRetention(e.config.EtcdSnapshotRetention, snapshotDir)
+	if e.config.EtcdS3 {
+		if e.initS3IfNil(ctx); err != nil {
+			return err
+		}
+
+		return e.s3.snapshotRetention(ctx)
+	}
+
+	return snapshotRetention(e.config.EtcdSnapshotRetention, e.config.EtcdSnapshotName, snapshotDir)
 }
 
 // ListSnapshots is an exported wrapper method that wraps an
@@ -1009,12 +1016,13 @@ func (e *ETCD) DeleteSnapshots(ctx context.Context, snapshots []string) error {
 		}
 
 		objectsCh := make(chan minio.ObjectInfo)
-		defer close(objectsCh)
 
 		ctx, cancel := context.WithTimeout(ctx, defaultS3OpTimeout)
 		defer cancel()
 
 		go func() {
+			defer close(objectsCh)
+
 			opts := minio.ListObjectsOptions{
 				Recursive: true,
 			}
@@ -1197,7 +1205,7 @@ func (e *ETCD) Restore(ctx context.Context) error {
 
 // snapshotRetention iterates through the snapshots and removes the oldest
 // leaving the desired number of snapshots.
-func snapshotRetention(retention int, snapshotDir string) error {
+func snapshotRetention(retention int, snapshotPrefix string, snapshotDir string) error {
 	nodeName := os.Getenv("NODE_NAME")
 
 	var snapshotFiles []os.FileInfo
@@ -1205,7 +1213,7 @@ func snapshotRetention(retention int, snapshotDir string) error {
 		if err != nil {
 			return err
 		}
-		if strings.HasPrefix(info.Name(), snapshotPrefix+nodeName) {
+		if strings.HasPrefix(info.Name(), snapshotPrefix+"-"+nodeName) {
 			snapshotFiles = append(snapshotFiles, info)
 		}
 		return nil

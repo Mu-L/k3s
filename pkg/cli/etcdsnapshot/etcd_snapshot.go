@@ -15,6 +15,7 @@ import (
 	"github.com/rancher/k3s/pkg/daemons/config"
 	"github.com/rancher/k3s/pkg/etcd"
 	"github.com/rancher/k3s/pkg/server"
+	util2 "github.com/rancher/k3s/pkg/util"
 	"github.com/rancher/wrangler/pkg/signals"
 	"github.com/urfave/cli"
 )
@@ -69,7 +70,7 @@ func run(app *cli.Context, cfg *cmds.Server) error {
 	}
 
 	if len(app.Args()) > 0 {
-		return cmds.ErrCommandNoArgs
+		return util2.ErrCommandNoArgs
 	}
 
 	serverConfig.ControlConfig.DataDir = dataDir
@@ -88,7 +89,7 @@ func run(app *cli.Context, cfg *cmds.Server) error {
 		return err
 	}
 	if !initialized {
-		return errors.New("managed etcd database has not been initialized")
+		return fmt.Errorf("etcd database not found in %s", dataDir)
 	}
 
 	cluster := cluster.New(&serverConfig.ControlConfig)
